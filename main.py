@@ -3578,4 +3578,3 @@ if __name__ == "__main__":
 
     # Start the bot (exactly as before)
     asyncio.run(main())
-
