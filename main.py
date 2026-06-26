@@ -25,6 +25,69 @@ TOKEN   = os.getenv("TOKEN")
 DB_NAME = "world_trigger.db"
 COLOR   = 0x1abc9c
 
+# ── Semantic colour palette ──
+# Every embed should use one of these so the bot has a consistent visual
+# language: teal = info/default, green = success, red = error, orange = warn.
+COLOR_SUCCESS = 0x2ecc71
+COLOR_ERROR   = 0xe74c3c
+COLOR_WARN    = 0xe67e22
+COLOR_INFO    = 0x1abc9c   # == COLOR (teal), the brand colour
+COLOR_GOLD    = 0xf1c40f
+
+# ── Bot branding ──
+BOT_NAME   = "Trigger Bot 2"
+BOT_TAGLINE = "A World Trigger Discord RPG"
+BOT_FOOTER = f"{BOT_NAME}  •  {BOT_TAGLINE}  •  Use /help"
+BOT_ICON   = "https://github.com/user-attachments/assets/0ecadd1a-fcbf-4e6a-89ca-28fec7beca92"
+
+# ============================================================
+# EMBED FACTORY  — every embed in the bot is built here so they all
+# share consistent branding (timestamp, footer, colour, author).
+# ============================================================
+def branded_embed(
+    title: str | None = None,
+    description: str | None = None,
+    color: int = COLOR_INFO,
+    *,
+    user: discord.abc.User | discord.Member | None = None,
+    thumbnail: str | None = None,
+    image: str | None = None,
+    footer: str | None = None,
+    show_timestamp: bool = True,
+) -> discord.Embed:
+    """Build a consistently-branded embed.
+
+    - ``user``       → sets the embed author to that user (name + avatar).
+    - ``thumbnail``  → small image top-right (usually a user avatar).
+    - ``footer``     → overrides the default bot footer.
+    - ``show_timestamp`` → adds a Discord timestamp (default True).
+    """
+    embed = discord.Embed(description=description, color=color)
+    if title:
+        embed.title = title
+    if show_timestamp:
+        embed.timestamp = datetime.datetime.now()
+    if user is not None:
+        embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+    if thumbnail:
+        embed.set_thumbnail(url=thumbnail)
+    if image:
+        embed.set_image(url=image)
+    embed.set_footer(text=footer or BOT_FOOTER, icon_url=BOT_ICON)
+    return embed
+
+def error_embed(title: str = "Something went wrong", description: str | None = None,
+                *, user=None) -> discord.Embed:
+    return branded_embed(title=title, description=description, color=COLOR_ERROR, user=user)
+
+def success_embed(title: str = "Success", description: str | None = None,
+                  *, user=None) -> discord.Embed:
+    return branded_embed(title=title, description=description, color=COLOR_SUCCESS, user=user)
+
+def warn_embed(title: str = "Hold on", description: str | None = None,
+               *, user=None) -> discord.Embed:
+    return branded_embed(title=title, description=description, color=COLOR_WARN, user=user)
+
 # ============================================================
 # DATA — FACTIONS
 # ============================================================
@@ -585,17 +648,42 @@ async def gain_trigger_xp(db, user_id: int, trigger_name: str, amount: int = 10)
             )
 
 # ============================================================
-# UTILITY — HP BAR
+# UTILITY — PROGRESS BARS
+# Clean, colour-coded bars using full-height blocks with subtle ticks.
+# hp_bar shows a numeric total too; stat_bar is a compact visual gauge.
 # ============================================================
-def hp_bar(current: int, maximum: int, length: int = 10) -> str:
+def hp_bar(current: int, maximum: int, length: int = 12) -> str:
+    """Return a compact HP gauge like  ``████████░░░░  80/100``."""
     if maximum <= 0:
         return "░" * length
     filled = max(0, min(length, int(current / maximum * length)))
     return "█" * filled + "░" * (length - filled)
 
 def stat_bar(value: int, length: int = 10) -> str:
+    """Compact stat gauge.  Higher values glow brighter via an icon prefix."""
     filled = max(0, min(length, value))
     return "█" * filled + "░" * (length - filled)
+
+def gauge(current: int, maximum: int, length: int = 12, *, show_numbers: bool = True) -> str:
+    """A prettier gauge that picks a status emoji based on fill ratio.
+
+    > 66% → 🟢 healthy   |   33–66% → 🟡 worn   |   < 33% → 🔴 critical
+    """
+    if maximum <= 0:
+        ratio = 0.0
+    else:
+        ratio = max(0.0, min(1.0, current / maximum))
+    filled = int(ratio * length)
+    bar = "█" * filled + "░" * (length - filled)
+    if ratio > 0.66:
+        icon = "🟢"
+    elif ratio > 0.33:
+        icon = "🟡"
+    else:
+        icon = "🔴"
+    if show_numbers:
+        return f"{icon} {bar}  {current}/{maximum}"
+    return f"{icon} {bar}"
 
 # ============================================================
 # UI — PAGINATED SHOP VIEW
@@ -623,20 +711,23 @@ class ShopView(discord.ui.View):
     def build_embed(self) -> discord.Embed:
         start   = self.page * TRIGGERS_PER_PAGE
         entries = self.trigger_list[start : start + TRIGGERS_PER_PAGE]
-        embed   = discord.Embed(title="<:Border:1519494342799130695> Border Trigger Shop",
-                                description="Purchase triggers using Credits.",
-                                color=COLOR)
+        embed   = branded_embed(
+            title       = "<:Border:1519494342799130695> Border Trigger Shop",
+            description = "Arm yourself for battle. Purchase triggers with <:Yen:1519498350364332082> Credits, then use `/equip` to load them.",
+            color       = COLOR_INFO)
+        type_emoji = {"main": "⚔️", "optional": "🛡️"}
         for name, data in entries:
-            if data.get("black_trigger"):  # <-- ADD THIS LINE
-                continue                   # <-- ADD THIS LINE
+            if data.get("black_trigger"):
+                continue
             is_combo = name != data.get("name", name) or any(c["name"] == name for c in COMBINED_TRIGGERS.values())
-            suffix   = " **[FUSED]**" if is_combo else ""
-            buffs    = ", ".join(f"{k}+{v}" for k, v in data["buffs"].items())
+            suffix   = "  **[FUSED]**" if is_combo else ""
+            t_icon   = type_emoji.get(data["type"], "•")
+            buffs    = " · ".join(f"`{k}`+{v}" for k, v in data["buffs"].items())
             embed.add_field(
-                name  = f"<:Trigger:1518993124406333661> {name}  ({data['type'].capitalize()}){suffix}",
-                value = f"<:Yen:1519498350364332082> **{data['price']} Credits**  <:TrionCube:1519499035613073438> Trion: {data['trion_cost']}\n📊 {buffs}",
+                name  = f"{t_icon} **{name}**  ({data['type'].capitalize()}){suffix}",
+                value = f"<:Yen:1519498350364332082> **{data['price']}**   ·   <:TrionCube:1519499035613073438> **{data['trion_cost']}**\n📊 {buffs}",
                 inline=False)
-        embed.set_footer(text=f"Page {self.page+1}/{self.total_pages} · Use /buytrigger <name>")
+        embed.set_footer(text=f"Page {self.page+1}/{self.total_pages}  •  Use /buytrigger <name>  •  {BOT_NAME}", icon_url=BOT_ICON)
         return embed
 
     @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary, custom_id="shop_prev")
@@ -879,35 +970,51 @@ class TurnBattleView(discord.ui.View):
         self.battle_log.append(f"🚀 **{self.player['name']}** bails out! Lost {cost} HP.")
         await self._end_battle(interaction, won=False, bailout=True)
 
-    def _status_text(self) -> str:
-        p_bar  = hp_bar(self.player["hp"], self.player["max_hp"])
-        ai_bar = hp_bar(self.ai["trion"],     self.ai["max_trion"])
-        lines  = [
-            f"## ⚔️ Turn {self.turn}",
-            f"🛡️ **{self.player['name']}**  {p_bar}  {self.player['hp']} HP  ·  <:TrionCube:1519499035613073438> {self.player['trion']}",
-            f"👾 **{self.ai['name']}**  {ai_bar}  {self.ai['trion']} HP",
-            "",
-        ] + self.battle_log[-4:]
-        return "\n".join(lines)
+    def _status_embed(self) -> discord.Embed:
+        """Build a polished, branded battle-status embed (replaces plain text)."""
+        p_gauge = gauge(self.player["hp"], self.player["max_hp"])
+        ai_gauge = gauge(self.ai["trion"], self.ai["max_trion"])
+        color = COLOR_SUCCESS if self.player["hp"] > self.player["max_hp"] * 0.33 else COLOR_ERROR
+        embed = branded_embed(
+            title       = f"⚔️ Battle — Turn {self.turn}",
+            description = "\n".join(self.battle_log[-4:]) or "*The battle begins…*",
+            color       = color,
+            user        = self.player["user"],
+            footer      = f"Turn {self.turn}  •  {BOT_NAME}")
+        embed.add_field(name=f"🛡️ {self.player['name']}",
+                        value=f"{p_gauge}\n<:TrionCube:1519499035613073438> Trion: **{self.player['trion']}**",
+                        inline=True)
+        embed.add_field(name=f"👾 {self.ai['name']}",
+                        value=ai_gauge,
+                        inline=True)
+        return embed
 
     async def _update_message(self, interaction):
-        await interaction.response.edit_message(content=self._status_text(), view=self)
+        await interaction.response.edit_message(embed=self._status_embed(), view=self)
 
     async def _end_battle(self, interaction, won: bool, bailout: bool = False):
         for child in self.children:
             child.disabled = True
 
-        result = "🏆 **Victory!**" if won else "💀 **Defeated!**"
+        if won:
+            result = "🏆 **Victory!**"
+            color = COLOR_SUCCESS
+        else:
+            result = "💀 **Defeated!**"
+            color = COLOR_ERROR
         if bailout:
-            result += " (Bailed Out)"
+            result += "  *(Bailed Out)*"
 
-        embed = discord.Embed(title="⚔️ Battle Ended", color=COLOR if won else 0xe74c3c)
-        embed.add_field(name="🛡️ You",    value=f"{self.player['hp']} HP",  inline=True)
-        embed.add_field(name="👾 Enemy",  value=f"{self.ai['trion']} HP",        inline=True)
-        embed.add_field(name="Result",    value=result,                              inline=False)
-        embed.description = "\n".join(self.battle_log[-8:])
+        embed = branded_embed(
+            title       = "⚔️ Battle Ended",
+            description = "\n".join(self.battle_log[-8:]) or "*The dust settles…*",
+            color       = color,
+            user        = self.player["user"])
+        embed.add_field(name="🛡️ You",   value=gauge(self.player["hp"], self.player["max_hp"], show_numbers=False) + f"  {self.player['hp']} HP", inline=True)
+        embed.add_field(name="👾 Enemy", value=gauge(self.ai["trion"], self.ai["max_trion"], show_numbers=False) + f"  {self.ai['trion']} HP", inline=True)
+        embed.add_field(name="Result",   value=result, inline=False)
 
-        await interaction.response.edit_message(content=None, embed=embed, view=self)
+        await interaction.response.edit_message(embed=embed, view=self)
         self.stop()
         if self.callback:
             # Pass final HP; callbacks use base_trion for the permanent stat.
@@ -1088,32 +1195,46 @@ class DuelTurnView(discord.ui.View):
         winner = self._other()
         await self._end_battle(interaction, winner=winner, loser=attacker)
 
-    def _status_text(self) -> str:
-        p1_bar = hp_bar(self.player1["hp"], self.player1["max_hp"])
-        p2_bar = hp_bar(self.player2["hp"], self.player2["max_hp"])
-        lines  = [
-            f"## ⚔️ Turn {self.turn}  —  {self.current['name']}'s turn",
-            f"🛡️ **{self.player1['name']}**  {p1_bar}  {self.player1['hp']} HP  ·  <:TrionCube:1519499035613073438> {self.player1['trion']}",
-            f"🛡️ **{self.player2['name']}**  {p2_bar}  {self.player2['hp']} HP  ·  <:TrionCube:1519499035613073438> {self.player2['trion']}",
-            "",
-        ] + self.battle_log[-4:]
-        return "\n".join(lines)
+    def _status_embed(self) -> discord.Embed:
+        """Branded duel-status embed (replaces plain text)."""
+        p1_gauge = gauge(self.player1["hp"], self.player1["max_hp"])
+        p2_gauge = gauge(self.player2["hp"], self.player2["max_hp"])
+        embed = branded_embed(
+            title       = f"⚔️ Duel — Turn {self.turn}",
+            description = f"**{self.current['name']}'s** turn to move.\n\n"
+                          + "\n".join(self.battle_log[-4:]) if self.battle_log else f"**{self.current['name']}'s** turn to move.",
+            color       = COLOR_INFO,
+            user        = self.current["user"],
+            footer      = f"Turn {self.turn}  •  {BOT_NAME}")
+        embed.add_field(name=f"🛡️ {self.player1['name']}",
+                        value=f"{p1_gauge}\n<:TrionCube:1519499035613073438> {self.player1['trion']}",
+                        inline=True)
+        embed.add_field(name=f"🛡️ {self.player2['name']}",
+                        value=f"{p2_gauge}\n<:TrionCube:1519499035613073438> {self.player2['trion']}",
+                        inline=True)
+        return embed
 
     async def _update_message(self, interaction):
-        await interaction.response.edit_message(content=self._status_text(), view=self)
+        await interaction.response.edit_message(embed=self._status_embed(), view=self)
 
     async def _end_battle(self, interaction, winner: dict, loser: dict):
         for child in self.children:
             child.disabled = True
 
-        embed = discord.Embed(title="⚔️ Duel Ended", color=COLOR)
-        embed.add_field(name="🏆 Winner", value=winner["name"], inline=True)
-        embed.add_field(name="💀 Loser",  value=loser["name"],  inline=True)
-        embed.add_field(name="🛡️ " + self.player1["name"], value=f"{self.player1['hp']} HP", inline=True)
-        embed.add_field(name="🛡️ " + self.player2["name"], value=f"{self.player2['hp']} HP", inline=True)
-        embed.description = "\n".join(self.battle_log[-8:])
+        embed = success_embed(
+            title       = "⚔️ Duel Ended",
+            description = "\n".join(self.battle_log[-8:]) or "*The duel concludes…*",
+            user        = winner["user"])
+        embed.add_field(name="🏆 Winner", value=f"**{winner['name']}**", inline=True)
+        embed.add_field(name="💀 Loser",  value=f"**{loser['name']}**",  inline=True)
+        embed.add_field(name=f"🛡️ {self.player1['name']}",
+                        value=gauge(self.player1["hp"], self.player1["max_hp"], show_numbers=False),
+                        inline=True)
+        embed.add_field(name=f"🛡️ {self.player2['name']}",
+                        value=gauge(self.player2["hp"], self.player2["max_hp"], show_numbers=False),
+                        inline=True)
 
-        await interaction.response.edit_message(content=None, embed=embed, view=self)
+        await interaction.response.edit_message(embed=embed, view=self)
         self.stop()
         if self.callback:
             await self.callback(
@@ -1586,11 +1707,17 @@ async def _give_story_rewards(db, user_id: int, r_type: str, r_amount: int, r_tr
 # ============================================================
 @bot.tree.command(name="help", description="Show all available commands")
 async def help_cmd(interaction: discord.Interaction):
-    embed = discord.Embed(title="🛡️ Border Bot — Command List", color=COLOR)
+    embed = branded_embed(
+        title       = "🛡️ Border Bot — Command Index",
+        description = f"Welcome to **{BOT_NAME}**, {interaction.user.display_name}!\n"
+                      f"Below is every command, grouped by category. Commands marked "
+                      f"with *(rank-locked)* require a higher Border rank.",
+        color       = COLOR_INFO,
+        user        = interaction.user)
     embed.add_field(name="🚀 Getting Started",
-                    value="`/joinborder`  `/setclass`  `/faction`  `/profile`", inline=False)
+                    value="`/joinborder`  `/setclass`  `/faction`  `/profile`  `/inventory`", inline=False)
     embed.add_field(name="⚔️ Combat",
-                    value="`/arena`  `/duel`  `/mission`  `/bailout`  `/combostats`", inline=False)
+                    value="`/arena`  `/duel`  `/mission`  `/bailout`  `/combostats`  `/simulation`", inline=False)
     embed.add_field(name="📖 Story",
                     value="`/story`  `/storymission`", inline=False)
     embed.add_field(name="🌌 Expedition",
@@ -1607,9 +1734,8 @@ async def help_cmd(interaction: discord.Interaction):
                     value="`/squadcreate`  `/squadinvite`  `/squadinfo`  `/squadleave`  `/operator`", inline=False)
     embed.add_field(name="🎖️ Mastery & Daily",
                     value="`/triggers_mastered`  `/missionsboard`", inline=False)
-    embed.add_field(name="🏢 Info",
-                    value="`/baseinfo`  `/base`  `/neighborhood`  `/trainers`  `/train`  `/simulation`  `/redeem`  `/ping`", inline=False)
-    embed.set_footer(text="Use any command to get started!")
+    embed.add_field(name="🏢 Info & Misc",
+                    value="`/baseinfo`  `/base`  `/neighborhood`  `/trainers`  `/train`  `/redeem`  `/rankwar`  `/about`  `/updatelog`", inline=False)
     await interaction.response.send_message(embed=embed)
 
 # ============================================================
@@ -1639,15 +1765,17 @@ async def joinborder(interaction: discord.Interaction):
         await db.execute("INSERT OR IGNORE INTO story_progress (user_id) VALUES (?)", (user_id,))
         await db.commit()
 
-    embed = discord.Embed(
+    embed = success_embed(
         title       = "🛡 Border Agent Registered",
-        description = f"Welcome to **Border**, {interaction.user.display_name}.",
-        color       = COLOR)
-    embed.set_thumbnail(url=interaction.user.display_avatar.url)
-    embed.add_field(name="<:TrionCube:1519499035613073438> Trion Level",     value=f"{trion} ({trion_rarity(trion)})", inline=True)
-    embed.add_field(name="🧬 Side Effect",     value=side["name"] if side else "None",    inline=True)
-    embed.add_field(name="🎰 Starting Spins",  value=5,                                   inline=True)
-    embed.add_field(name="<:Yen:1519498350364332082> Starting Credits",value=100,                                  inline=True)
+        description = f"Welcome to **Border**, {interaction.user.display_name}. Your Trion has been measured — your journey begins now.",
+        user        = interaction.user,
+        thumbnail   = interaction.user.display_avatar.url)
+    embed.add_field(name="<:TrionCube:1519499035613073438> Trion Level",
+                    value=f"**{trion}** ({trion_rarity(trion)})", inline=True)
+    embed.add_field(name="🧬 Side Effect",
+                    value=side["name"] if side else "None", inline=True)
+    embed.add_field(name="🎰 Starting Spins",  value="**5**", inline=True)
+    embed.add_field(name="<:Yen:1519498350364332082> Starting Credits", value="**100**", inline=True)
     embed.add_field(name="⚔️ Next Steps",
                     value="1️⃣ `/setclass` — pick Attacker / Sniper / Gunner / Shooter / All Rounder\n"
                           "2️⃣ `/faction` — join Kido, Shinoda, or Tamakoma\n"
@@ -1777,49 +1905,58 @@ async def profile(interaction: discord.Interaction):
     rank = get_rank(elo)
     cap  = get_stat_cap(elo)
     used = sum(stats.values()) - 6
+    rank_color = RANK_COLORS[rank]
 
-    embed = discord.Embed(title=f"<:Border:1519494342799130695> {interaction.user.display_name}", color=COLOR)
-    embed.set_thumbnail(url=interaction.user.display_avatar.url)
+    embed = branded_embed(
+        color     = rank_color,
+        user      = interaction.user,
+        thumbnail = interaction.user.display_avatar.url,
+        footer    = f"{BOT_NAME}  •  {rank} Agent  •  /profile")
+    embed.title = f"<:Border:1519494342799130695> Agent Dossier — {interaction.user.display_name}"
 
     side_name = json.loads(side)["name"] if side else "None"
-    embed.add_field(name="<:TrionCube:1519499035613073438> Trion",       value=f"{trion} ({trion_rarity(trion)})", inline=True)
-    embed.add_field(name="🧬 Side Effect", value=side_name,                          inline=True)
+    embed.add_field(name="<:TrionCube:1519499035613073438> Trion",
+                    value=f"**{trion}** ({trion_rarity(trion)})", inline=True)
+    embed.add_field(name="🧬 Side Effect", value=side_name, inline=True)
     if cls:
-        embed.add_field(name="⚔️ Class",   value=f"{CLASSES[cls]['emoji']} {cls}", inline=True)
+        embed.add_field(name="⚔️ Class", value=f"{CLASSES[cls]['emoji']} {cls}", inline=True)
     if fac:
         embed.add_field(name="🏛️ Faction", value=f"{FACTIONS[fac]['emoji']} {fac}", inline=True)
 
-    elo_bar = hp_bar(min(elo, 2000), 2000)
-    embed.add_field(name="🏆 ELO", value=f"{elo} ({rank})\n{elo_bar}", inline=False)
-    embed.add_field(name="W / L",         value=f"{wins} / {losses}",   inline=True)
-    embed.add_field(name="🎰 Spins",      value=spins,                  inline=True)
-    embed.add_field(name="<:Yen:1519498350364332082> Credits",    value=credits,                inline=True)
-    embed.add_field(name="🌟 Skill Pts",  value=skill_pts,              inline=True)
+    elo_bar = gauge(min(elo, 2000), 2000, show_numbers=False)
+    embed.add_field(name=f"🏆 ELO — {rank}", value=f"**{elo}**\n{elo_bar}  {elo}/2000", inline=False)
+    embed.add_field(name="⚔️ W / L",   value=f"{wins} / {losses}", inline=True)
+    embed.add_field(name="🎰 Spins",   value=f"**{spins}**",       inline=True)
+    embed.add_field(name="<:Yen:1519498350364332082> Credits", value=f"**{credits}**", inline=True)
+    embed.add_field(name="🌟 Skill Pts", value=f"**{skill_pts}**", inline=True)
 
     stat_text = ""
+    stat_emojis = {"Attack": "⚔️", "Defense": "🛡️", "Mobility": "🏃",
+                   "Intelligence": "🧠", "Trion Control": "<:TrionCube:1519499035613073438>", "Perception": "👁️"}
     for name_, val in stats.items():
         bar = stat_bar(min(val, 10))
-        stat_text += f"**{name_}**: {val}  {bar}\n"
-    embed.add_field(name=f"📊 Stats  ({used}/{cap} cap  ·  {rank})",
+        stat_text += f"{stat_emojis.get(name_, '•')} **{name_}**: `{val:>2}` {bar}\n"
+    embed.add_field(name=f"📊 Combat Stats  ({used}/{cap} cap · {rank})",
                     value=stat_text, inline=False)
-    embed.add_field(name="⭐ Unspent Stat Pts", value=stat_pts, inline=True)
+    embed.add_field(name="⭐ Unspent Stat Pts", value=f"**{stat_pts}**", inline=True)
 
     if skills:
         skill_text = "  ".join(f"**{k}** Lv.{v}" for k, v in skills.items())
         embed.add_field(name="🧩 Skills", value=skill_text, inline=False)
 
-    embed.add_field(name="⚡ Loadout",    value=", ".join(triggers) if triggers else "Empty", inline=False)
-    embed.add_field(name="📖 Story",      value=f"{story_arc} — Mission {story_mission}", inline=True)
+    loadout_str = " · ".join(f"<:Trigger:1518993124406333661> {t}" for t in triggers) if triggers else "*Empty — use /equip*"
+    embed.add_field(name="⚡ Loadout", value=loadout_str, inline=False)
+    embed.add_field(name="📖 Story Progress", value=f"{story_arc} — Mission {story_mission}", inline=True)
 
     if credits_earned:
         embed.add_field(name="🌌 Expedition Returned!",
-                        value=f"+{credits_earned} Credits · +{spins_earned} Spins", inline=False)
+                        value=f"+{credits_earned} <:Yen:1519498350364332082> · +{spins_earned} 🎰", inline=False)
 
     if daily:
         mission_text = ""
         for m_id, prog, targ, comp in daily:
-            status        = "✅" if comp else f"{prog}/{targ}"
-            mission_text += f"• {DAILY_MISSION_POOL[m_id]['desc']} [{status}]\n"
+            status = "✅ Done" if comp else f"`{prog}/{targ}`"
+            mission_text += f"• {DAILY_MISSION_POOL[m_id]['desc']} — {status}\n"
         embed.add_field(name="📋 Daily Missions", value=mission_text, inline=False)
 
     await interaction.response.send_message(embed=embed)
@@ -1871,7 +2008,7 @@ async def buytrigger(interaction: discord.Interaction, trigger: str):
         cursor = await db.execute("SELECT 1 FROM triggers WHERE user_id=? AND trigger=?", (user_id, trig_name))
         if await cursor.fetchone():
             await interaction.response.send_message(
-                embed=discord.Embed(title="⚠️ Already Owned", description=f"You already own **{trig_name}**.", color=0xf1c40f),
+                embed=warn_embed("⚠️ Already Owned", f"You already own **{trig_name}**.", user=interaction.user),
                 ephemeral=True)
             return
 
@@ -1880,9 +2017,12 @@ async def buytrigger(interaction: discord.Interaction, trigger: str):
         await db.commit()
 
     slot_hint = "Main or Sub" if trig_data["type"] == "main" else "Optional"
-    embed = discord.Embed(title="✅ Trigger Purchased", description=f"You bought **{trig_name}**!", color=0x2ecc71)
-    embed.add_field(name="Slot",   value=slot_hint)
-    embed.add_field(name="Next",   value=f"`/equip {trig_name} {slot_hint.split()[0]}`")
+    embed = success_embed(
+        title="✅ Trigger Purchased",
+        description=f"You bought **{trig_name}** for **{price}** <:Yen:1519498350364332082>!",
+        user=interaction.user)
+    embed.add_field(name="Slot Type", value=slot_hint, inline=True)
+    embed.add_field(name="Next Step", value=f"`/equip {trig_name} {slot_hint.split()[0]}`", inline=True)
     await interaction.response.send_message(embed=embed)
 
 # ============================================================
@@ -1895,16 +2035,27 @@ async def loadout(interaction: discord.Interaction):
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute("SELECT trigger, slot FROM loadouts WHERE user_id=?", (interaction.user.id,))
         data   = await cursor.fetchall()
-    equipped = {slot: "None" for slot in LOADOUT_SLOTS}
+    equipped = {slot: None for slot in LOADOUT_SLOTS}
     for trig, slot in data:
         equipped[slot] = trig
-    embed = discord.Embed(title=f"⚡ {interaction.user.display_name}'s Loadout", color=COLOR)
+    embed = branded_embed(
+        title       = f"⚡ Loadout — {interaction.user.display_name}",
+        description = "Your equipped triggers. Black Triggers (🌑) occupy the Main slot exclusively.",
+        color       = COLOR_INFO,
+        user        = interaction.user)
     for slot in LOADOUT_SLOTS:
         trig  = equipped[slot]
-        tdata = get_trigger(trig) if trig != "None" else None
-        extra = f"  *(Trion: {tdata['trion_cost']})*" if tdata else ""
-        embed.add_field(name=f"{slot} Slot", value=trig + extra, inline=False)
-    embed.set_footer(text="Main-type: Main or Sub  |  Optional: Optional only")
+        if trig:
+            tdata = get_trigger(trig)
+            black_tag = " 🌑" if tdata and tdata.get("black_trigger") else ""
+            trion_tag = f"  ·  <:TrionCube:1519499035613073438> {tdata['trion_cost']}" if tdata else ""
+            buffs = " · ".join(f"{k}+{v}" for k, v in tdata["buffs"].items()) if tdata else ""
+            embed.add_field(name=f"{slot} Slot",
+                            value=f"<:Trigger:1518993124406333661> **{trig}**{black_tag}{trion_tag}\n📊 {buffs}",
+                            inline=False)
+        else:
+            embed.add_field(name=f"{slot} Slot", value="— *empty*  *(use `/equip`)*", inline=False)
+    embed.set_footer(text="Main-type: Main or Sub  •  Optional: Optional only  •  🌑 = Black Trigger", icon_url=BOT_ICON)
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="equip", description="Equip a trigger into a loadout slot")
@@ -1917,12 +2068,16 @@ async def equip(interaction: discord.Interaction, trigger: str, slot: str):
     slot       = slot.title()
 
     if slot not in LOADOUT_SLOTS:
-        await interaction.response.send_message("Slot must be **Main**, **Sub**, or **Optional**.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=warn_embed("Invalid Slot", "Slot must be **Main**, **Sub**, or **Optional**.", user=interaction.user),
+            ephemeral=True)
         return
 
     trig_data = get_trigger(trig_name)
     if not trig_data:
-        await interaction.response.send_message("Trigger not found. Use `/shop`.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=error_embed("Trigger Not Found", f"**{trig_name}** doesn't exist. Use `/shop` to browse triggers.", user=interaction.user),
+            ephemeral=True)
         return
 
     t_type = trig_data["type"]
@@ -1933,22 +2088,31 @@ async def equip(interaction: discord.Interaction, trigger: str, slot: str):
     # other triggers.  Restrict them to the Main slot only.
     if is_black and slot != "Main":
         await interaction.response.send_message(
-            f"🌑 **{trig_name}** is a Black Trigger — it demands the **Main** slot exclusively.\n"
-            f"*(A Black Trigger consumes the wielder's full trion focus.)*",
+            embed=warn_embed(
+                "🌑 Black Trigger Restriction",
+                f"**{trig_name}** is a Black Trigger — it demands the **Main** slot exclusively.\n"
+                f"*(A Black Trigger consumes the wielder's full trion focus.)*",
+                user=interaction.user),
             ephemeral=True)
         return
 
     if t_type == "main"     and slot not in MAIN_COMPATIBLE_SLOTS:
-        await interaction.response.send_message(f"**{trig_name}** (Main-type) can only go in **Main** or **Sub**.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=warn_embed("Wrong Slot Type", f"**{trig_name}** (Main-type) can only go in **Main** or **Sub**.", user=interaction.user),
+            ephemeral=True)
         return
     if t_type == "optional" and slot not in OPT_COMPATIBLE_SLOTS:
-        await interaction.response.send_message(f"**{trig_name}** (Optional) can only go in the **Optional** slot.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=warn_embed("Wrong Slot Type", f"**{trig_name}** (Optional) can only go in the **Optional** slot.", user=interaction.user),
+            ephemeral=True)
         return
 
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute("SELECT 1 FROM triggers WHERE user_id=? AND trigger=?", (user_id, trig_name))
         if not await cursor.fetchone():
-            await interaction.response.send_message(f"You don't own **{trig_name}**.", ephemeral=True)
+            await interaction.response.send_message(
+                embed=warn_embed("Trigger Not Owned", f"You don't own **{trig_name}**. Buy it with `/buytrigger`.", user=interaction.user),
+                ephemeral=True)
             return
 
         # Equipping a Black Trigger to Main clears the Sub slot (lore: you
@@ -1962,9 +2126,9 @@ async def equip(interaction: discord.Interaction, trigger: str, slot: str):
         await db.commit()
 
     await interaction.response.send_message(
-        embed=discord.Embed(title="✅ Equipped",
-                            description=f"**{trig_name}** → **{slot}** slot.",
-                            color=COLOR))
+        embed=success_embed("✅ Equipped",
+                            f"**{trig_name}** → **{slot}** slot.",
+                            user=interaction.user))
 
 # ============================================================
 # /inventory  (all owned triggers + credits in one view)
@@ -1990,12 +2154,14 @@ async def inventory(interaction: discord.Interaction):
         mastery = {r[0]: r[1] for r in await cursor.fetchall()}
 
     equipped_map = {slot: trig for trig, slot in loadout_rows}
+    rank = get_rank(elo)
 
-    embed = discord.Embed(
-        title       = f"🎒 {interaction.user.display_name}'s Inventory",
-        description = f"<:Border:1519494342799130695> Border Agent  ·  **{get_rank(elo)}**",
-        color       = COLOR)
-    embed.set_thumbnail(url=interaction.user.display_avatar.url)
+    embed = branded_embed(
+        title       = f"🎒 Inventory — {interaction.user.display_name}",
+        description = f"<:Border:1519494342799130695> **{rank} Agent**",
+        color       = RANK_COLORS[rank],
+        user        = interaction.user,
+        thumbnail   = interaction.user.display_avatar.url)
 
     # Currency row
     embed.add_field(name="<:TrionCube:1519499035613073438> Trion", value=f"**{trion}** ({trion_rarity(trion)})", inline=True)
@@ -2008,12 +2174,10 @@ async def inventory(interaction: discord.Interaction):
         trig = equipped_map.get(slot, "—")
         if trig != "—":
             tdata = get_trigger(trig)
-            tag = ""
-            if tdata and tdata.get("black_trigger"):
-                tag = " 🌑"
+            tag = " 🌑" if tdata and tdata.get("black_trigger") else ""
             loadout_lines.append(f"**{slot}:** <:Trigger:1518993124406333661> {trig}{tag}")
         else:
-            loadout_lines.append(f"**{slot}:** —")
+            loadout_lines.append(f"**{slot}:** — *empty*")
     embed.add_field(name="⚡ Equipped Loadout", value="\n".join(loadout_lines), inline=False)
 
     # All owned triggers
@@ -2032,7 +2196,6 @@ async def inventory(interaction: discord.Interaction):
         if len(text) <= 1024:
             embed.add_field(name=f"📦 Owned Triggers ({len(owned_triggers)})", value=text, inline=False)
         else:
-            # Split into two fields
             mid = len(trigger_lines) // 2
             embed.add_field(name=f"📦 Owned Triggers ({len(owned_triggers)}) — 1/2",
                             value="\n".join(trigger_lines[:mid]), inline=False)
@@ -2041,7 +2204,7 @@ async def inventory(interaction: discord.Interaction):
     else:
         embed.add_field(name="📦 Owned Triggers", value="*No triggers owned yet. Use `/shop` to buy some!*", inline=False)
 
-    embed.set_footer(text="🌑 = Black Trigger  |  ✅ = Currently equipped  |  Use /equip to change loadout")
+    embed.set_footer(text="🌑 = Black Trigger  •  ✅ = Equipped  •  Use /equip to change loadout", icon_url=BOT_ICON)
     await interaction.response.send_message(embed=embed)
 
 # ============================================================
@@ -2063,11 +2226,15 @@ class SpinView(discord.ui.View):
         self.side = json.loads(self.side_json) if self.side_json else None
 
     def build_embed(self) -> discord.Embed:
-        embed = discord.Embed(
+        color = COLOR_GOLD if self.spins > 0 else COLOR_ERROR
+        footer = "Out of spins — earn more via missions, expeditions & duels!" if self.spins <= 0 \
+                 else f"{BOT_NAME}  •  Click a button to spend a spin"
+        embed = branded_embed(
             title       = "🎰 Trion Spin Panel",
             description = "Spend a spin to reroll your **Trion** level or **Side Effect**.\n"
                           "Each spin is final — choose wisely!",
-            color       = COLOR)
+            color       = color,
+            footer      = footer)
         embed.add_field(name="<:TrionCube:1519499035613073438> Current Trion",
                         value=f"**{self.trion}** ({trion_rarity(self.trion)})", inline=True)
         embed.add_field(name="🧬 Current Side Effect",
@@ -2075,8 +2242,6 @@ class SpinView(discord.ui.View):
         embed.add_field(name="🎰 Spins Remaining", value=f"**{self.spins}**", inline=False)
         if self.last_result:
             embed.add_field(name="🎲 Last Result", value=self.last_result, inline=False)
-        if self.spins <= 0:
-            embed.set_footer(text="Out of spins — earn more via missions, expeditions & duels!")
         return embed
 
     def _update_buttons(self):
@@ -2085,7 +2250,9 @@ class SpinView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This isn't your spin panel!", ephemeral=True)
+            await interaction.response.send_message(
+                embed=warn_embed("Not Your Panel", "This spin panel belongs to another agent.", user=interaction.user),
+                ephemeral=True)
             return False
         return True
 
@@ -2226,22 +2393,29 @@ async def upgradestat(interaction: discord.Interaction, stat: str):
 async def leaderboard(interaction: discord.Interaction):
     async with aiosqlite.connect(DB_NAME) as db:
         cursor = await db.execute(
-            "SELECT user_id, elo, class FROM agents ORDER BY elo DESC LIMIT 10")
+            "SELECT user_id, elo, class, wins, losses FROM agents ORDER BY elo DESC LIMIT 10")
         data = await cursor.fetchall()
     if not data:
-        await interaction.response.send_message("No agents yet.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=warn_embed("No Agents Yet", "No Border agents have registered. Be the first with `/joinborder`!"),
+            ephemeral=True)
         return
-    embed = discord.Embed(title="🏆 Top Border Agents", color=0xf1c40f)
-    for i, (uid, elo, cls) in enumerate(data, 1):
+    medals = ["🥇", "🥈", "🥉"] + ["🏅"] * 7
+    embed = branded_embed(
+        title       = "🏆 Border Agent Leaderboard",
+        description = f"Top **{len(data)}** agents by ELO ranking.",
+        color       = COLOR_GOLD)
+    for i, (uid, elo, cls, wins, losses) in enumerate(data):
         try:
             user = await bot.fetch_user(uid)
             name = user.display_name
         except Exception:
             name = f"Agent {uid}"
         cls_emoji = CLASSES[cls]["emoji"] if cls and cls in CLASSES else "❓"
+        rank = get_rank(elo)
         embed.add_field(
-            name  = f"{i}. {name}",
-            value = f"{cls_emoji} {get_rank(elo)} · ELO: {elo}",
+            name  = f"{medals[i]}  {name}",
+            value = f"{cls_emoji} **{rank}**  ·  ELO: **{elo}**  ·  W/L: {wins}/{losses}",
             inline=False)
     await interaction.response.send_message(embed=embed)
 
@@ -2327,11 +2501,16 @@ async def arena(interaction: discord.Interaction):
         callback       = arena_callback,
         squad_operator = data["squad_operator"],
     )
-    await interaction.response.send_message(
-        f"⚔️ **{interaction.user.display_name}** enters the arena!\n"
-        f"Turn 1 — make your move!\n"
-        f"👾 {wave_count} Neighbours incoming: {', '.join(enemy_names)}",
-        view=view)
+    intro_embed = branded_embed(
+        title       = "⚔️ Solo Arena — Wave Incoming!",
+        description = f"**{interaction.user.display_name}** enters the arena.\n"
+                      f"Turn 1 — make your move!",
+        color       = COLOR_WARN,
+        user        = interaction.user)
+    intro_embed.add_field(name="👾 Incoming Wave",
+                          value=f"**{wave_count} Neighbours**: {', '.join(enemy_names)}",
+                          inline=False)
+    await interaction.response.send_message(embed=intro_embed, view=view)
 
 # ============================================================
 # /duel  (turn-based PvP)
@@ -2342,20 +2521,28 @@ async def duel(interaction: discord.Interaction, opponent: discord.Member):
     if not await agent_required(interaction):
         return
     if opponent.id == interaction.user.id:
-        await interaction.response.send_message("You can't duel yourself!", ephemeral=True)
+        await interaction.response.send_message(
+            embed=warn_embed("Can't Duel Yourself", "You can't challenge yourself to a duel.", user=interaction.user),
+            ephemeral=True)
         return
     if opponent.bot:
-        await interaction.response.send_message("You can't duel a bot!", ephemeral=True)
+        await interaction.response.send_message(
+            embed=warn_embed("Can't Duel a Bot", "Bots don't accept duel challenges.", user=interaction.user),
+            ephemeral=True)
         return
     if not await agent_exists(opponent.id):
-        await interaction.response.send_message(f"{opponent.mention} is not a Border agent.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=warn_embed("Not a Border Agent", f"{opponent.mention} is not a registered Border agent.", user=interaction.user),
+            ephemeral=True)
         return
 
-    embed = discord.Embed(
+    embed = branded_embed(
         title       = "⚔️ Duel Challenge!",
-        description = f"{interaction.user.mention} challenges {opponent.mention}!",
-        color       = 0xe74c3c)
-    embed.set_footer(text="The challenged player has 60 seconds to accept.")
+        description = f"{interaction.user.mention} challenges {opponent.mention} to a duel!",
+        color       = COLOR_ERROR,
+        footer      = "The challenged player has 60 seconds to accept.")
+    embed.add_field(name="🛡️ Challenger", value=interaction.user.mention, inline=True)
+    embed.add_field(name="🛡️ Challenged", value=opponent.mention, inline=True)
     await interaction.response.send_message(
         embed  = embed,
         view   = DuelAcceptView(interaction.user, opponent))
@@ -2364,7 +2551,9 @@ async def _start_duel(interaction: discord.Interaction, challenger: discord.Memb
     p1_data = await _fetch_player_combat_data(challenger.id)
     p2_data = await _fetch_player_combat_data(opponent.id)
     if not p1_data or not p2_data:
-        await interaction.followup.send("One player's data was not found.", ephemeral=True)
+        await interaction.followup.send(
+            embed=error_embed("Data Not Found", "One player's combat data could not be loaded."),
+            ephemeral=True)
         return
 
     async def duel_callback(winner, loser, final_trion1, final_trion2):
@@ -2388,10 +2577,16 @@ async def _start_duel(interaction: discord.Interaction, challenger: discord.Memb
     player2 = {"user": opponent,   "name": opponent.display_name,   **p2_data}
 
     view = DuelTurnView(player1, player2, callback=duel_callback)
-    await interaction.followup.send(
-        f"⚔️ **{challenger.display_name}** vs **{opponent.display_name}**!\n"
-        f"Turn 1 — {challenger.display_name}'s move!",
-        view=view)
+    intro_embed = branded_embed(
+        title       = "⚔️ Duel Begin!",
+        description = f"**{challenger.display_name}** vs **{opponent.display_name}**!\n"
+                      f"Turn 1 — **{challenger.display_name}**'s move!",
+        color       = COLOR_ERROR)
+    intro_embed.add_field(name=f"🛡️ {challenger.display_name}",
+                          value=f"{challenger.mention}\nELO: {p1_data['elo']}", inline=True)
+    intro_embed.add_field(name=f"🛡️ {opponent.display_name}",
+                          value=f"{opponent.mention}\nELO: {p2_data['elo']}", inline=True)
+    await interaction.followup.send(embed=intro_embed, view=view)
 
 # ============================================================
 # /mission  (random defense mission, turn-based PvE)
@@ -2457,9 +2652,16 @@ async def mission(interaction: discord.Interaction):
         callback       = mission_callback,
         squad_operator = data["squad_operator"],
     )
-    await interaction.response.send_message(
-        f"🆘 **{mission_desc}!** Defend against the Neighbors!\nTurn 1 — make your move!",
-        view=view)
+    intro_embed = branded_embed(
+        title       = f"🆘 {mission_desc}",
+        description = f"**{interaction.user.display_name}**, defend against the Neighbours!\n"
+                      f"Turn 1 — make your move!",
+        color       = COLOR_WARN,
+        user        = interaction.user)
+    intro_embed.add_field(name="👾 Enemy Force",
+                          value=f"**{wave_count} Neighbours**: {', '.join(enemy_names)}",
+                          inline=False)
+    await interaction.response.send_message(embed=intro_embed, view=view)
 
 # ============================================================
 # /story  /storymission
@@ -2487,22 +2689,26 @@ async def story(interaction: discord.Interaction):
 
     if not mission_data:
         await interaction.response.send_message(
-            embed=discord.Embed(title="📖 Story Complete",
-                                description="You've finished all current missions. More coming soon!",
-                                color=COLOR))
+            embed=success_embed("📖 Story Complete",
+                                "You've finished all current missions. More content coming soon!",
+                                user=interaction.user))
         return
 
     m_type, desc, choices_json, r_type, r_amount, r_trigger, replayable = mission_data
-    embed = discord.Embed(
+    type_labels = {"arena": "⚔️ Battle", "boss": "🌑 Boss Fight", "choice": "📜 Choice", "exploration": "🔍 Exploration"}
+    embed = branded_embed(
         title       = f"📖 {arc} — Chapter {chapter}, Mission {mission_num}",
         description = desc,
-        color       = COLOR)
+        color       = COLOR_INFO,
+        user        = interaction.user)
+    embed.add_field(name="Mission Type", value=type_labels.get(m_type, m_type.title()), inline=True)
+    embed.add_field(name="🔁 Replayable", value="Yes" if replayable else "No", inline=True)
+    reward_str = f"**{r_amount}** {r_type}"
+    if r_trigger:
+        reward_str += f"  ·  <:Trigger:1518993124406333661> {r_trigger}"
+    embed.add_field(name="🎁 Reward", value=reward_str, inline=True)
     if m_type == "choice":
-        embed.add_field(name="Choices", value="Use `/storymission` to make your choice.", inline=False)
-    embed.add_field(name="🎁 Reward",
-                    value=f"{r_amount} {r_type}" + (f" · Trigger: {r_trigger}" if r_trigger else ""),
-                    inline=True)
-    embed.add_field(name="🔁 Type", value="Replayable" if replayable else "One-time", inline=True)
+        embed.add_field(name="📜 Choices", value="Use `/storymission` to make your choice.", inline=False)
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="storymission", description="Play your current story mission")
@@ -2858,16 +3064,21 @@ async def trionrank(interaction: discord.Interaction):
         elo, cls = await cursor.fetchone()
 
     rank    = get_rank(elo)
-    descs   = {"C-Rank": "New trainees learning the ropes.",
-               "B-Rank": "Experienced agents trusted with dangerous missions.",
-               "A-Rank": "Elite operators — the backbone of Border."}
-    next_elo = "1200+" if rank == "C-Rank" else "1600+" if rank == "B-Rank" else "MAX"
+    descs   = {"C-Rank": "New trainees learning the ropes. The backbone of Border's numbers.",
+               "B-Rank": "Experienced agents trusted with dangerous missions and expeditions.",
+               "A-Rank": "Elite operators — the strongest fighters Border has to offer."}
+    next_elo = "1200+ ELO" if rank == "C-Rank" else "1600+ ELO" if rank == "B-Rank" else "Maximum rank"
+    caps     = {"C-Rank": "15 stat points", "B-Rank": "30 stat points", "A-Rank": "50 stat points"}
 
-    embed = discord.Embed(title=f"🏅 Border Rank: {rank}", description=descs[rank],
-                          color=RANK_COLORS[rank])
-    embed.add_field(name="ELO",        value=elo)
-    embed.add_field(name="Class",      value=f"{CLASSES[cls]['emoji']} {cls}" if cls else "None")
-    embed.add_field(name="Next Rank",  value=next_elo)
+    embed = branded_embed(
+        title       = f"🏅 Border Rank: {rank}",
+        description = descs[rank],
+        color       = RANK_COLORS[rank],
+        user        = interaction.user)
+    embed.add_field(name="🏆 ELO",        value=f"**{elo}**", inline=True)
+    embed.add_field(name="⚔️ Class",      value=f"{CLASSES[cls]['emoji']} {cls}" if cls else "None", inline=True)
+    embed.add_field(name="📈 Next Rank",  value=next_elo, inline=True)
+    embed.add_field(name="📊 Stat Cap",   value=caps[rank], inline=True)
     await interaction.response.send_message(embed=embed)
 
 # ============================================================
@@ -2883,12 +3094,18 @@ async def simulation(interaction: discord.Interaction):
         triggers = [r[0] for r in await cursor.fetchall()]
 
     if not triggers:
-        await interaction.response.send_message("You have no triggers equipped. Use `/equip` first.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=warn_embed("No Triggers Equipped", "You have no triggers equipped. Use `/equip` first.", user=interaction.user),
+            ephemeral=True)
         return
 
     lines = "\n".join(
-        f"⚙️ **{t}** — {get_trigger(t)['type'].capitalize()}" for t in triggers if get_trigger(t))
-    embed = discord.Embed(title="🎮 Trigger Simulation", description="Risk-free practice session.", color=COLOR)
+        f"<:Trigger:1518993124406333661> **{t}** — {get_trigger(t)['type'].capitalize()}" for t in triggers if get_trigger(t))
+    embed = branded_embed(
+        title       = "🎮 Trigger Simulation",
+        description = "Risk-free practice session. No Trion consumed, no stats changed.",
+        color       = COLOR_INFO,
+        user        = interaction.user)
     embed.add_field(name="Equipped Loadout", value=lines or "None", inline=False)
     embed.add_field(name="Result", value="✅ All triggers fired successfully. No Trion consumed.", inline=False)
     await interaction.response.send_message(embed=embed)
@@ -2940,15 +3157,19 @@ async def combostats(interaction: discord.Interaction):
     full = await calculate_damage(user_id, trion, side, triggers, stats,
                                    attacker_class=cls, faction=fac, skills=skills)
 
-    embed = discord.Embed(title="💥 Combo Analysis", color=COLOR)
-    embed.set_thumbnail(url=interaction.user.display_avatar.url)
+    embed = branded_embed(
+        title       = "💥 Combo Analysis",
+        description = "Estimated damage output based on your real stats, loadout & skills.",
+        color       = COLOR_INFO,
+        user        = interaction.user,
+        thumbnail   = interaction.user.display_avatar.url)
 
     embed.add_field(name="<:TrionCube:1519499035613073438> Trion", value=f"**{trion}** ({trion_rarity(trion)})", inline=True)
     embed.add_field(name="⚔️ Class", value=f"{CLASSES[cls]['emoji']} {cls}" if cls else "None", inline=True)
     embed.add_field(name="🏛️ Faction", value=f"{FACTIONS[fac]['emoji']} {fac}" if fac else "None", inline=True)
 
     embed.add_field(name="⚡ Loadout",
-                    value=" | ".join(triggers) if triggers else "*Empty — equip a trigger!*",
+                    value=" · ".join(f"<:Trigger:1518993124406333661> {t}" for t in triggers) if triggers else "*Empty — equip a trigger!*",
                     inline=False)
 
     # Damage layer breakdown — proves stats are used
@@ -2984,7 +3205,7 @@ async def combostats(interaction: discord.Interaction):
     else:
         embed.add_field(name="🗡️ Moves", value="*Equip a main trigger to see per-move damage.*", inline=False)
 
-    embed.set_footer(text="Damage has ±10 random variance per hit. Class advantage adds +30%.")
+    embed.set_footer(text="Damage has ±10 random variance per hit  •  Class advantage adds +30%", icon_url=BOT_ICON)
     await interaction.response.send_message(embed=embed)
 
 # ============================================================
@@ -3002,15 +3223,20 @@ async def triggers_mastered(interaction: discord.Interaction):
 
     if not mastery:
         await interaction.response.send_message(
-            "Use triggers in battle to gain mastery XP!", ephemeral=True)
+            embed=warn_embed("No Mastery Yet", "Use triggers in battle to gain mastery XP!", user=interaction.user),
+            ephemeral=True)
         return
 
-    embed = discord.Embed(title="🎖️ Trigger Mastery", color=COLOR)
+    embed = branded_embed(
+        title       = "🎖️ Trigger Mastery",
+        description = f"Your trigger mastery progress. **{len(mastery)}** trigger(s) trained.",
+        color       = COLOR_INFO,
+        user        = interaction.user)
     for trig, xp, level in mastery[:10]:
         next_xp = (level * 100)
         bar     = hp_bar(xp % 100, 100)
-        embed.add_field(name=f"**{trig}**",
-                        value=f"Level **{level}** · {xp} XP\n{bar} → Lv.{level+1} at {next_xp} XP",
+        embed.add_field(name=f"<:Trigger:1518993124406333661> **{trig}**",
+                        value=f"Level **{level}** · {xp} XP\n{bar}  →  Lv.{level+1} at {next_xp} XP",
                         inline=False)
     await interaction.response.send_message(embed=embed)
 
@@ -3021,12 +3247,17 @@ async def triggers_mastered(interaction: discord.Interaction):
 async def neighborhood(interaction: discord.Interaction):
     name_, hp, dmg = random_neighbor()
     threat = "🟢 Low" if dmg < 5 else "🟡 Medium" if dmg < 8 else "🔴 High"
-    embed  = discord.Embed(title="👁️ Neighborhood Scout Report",
-                           description=f"Detected: **{name_}**", color=0xe67e22)
-    embed.add_field(name="Threat Level", value=threat)
-    embed.add_field(name="HP",           value=hp)
-    embed.add_field(name="Damage",       value=dmg)
-    embed.add_field(name="Recommended",  value="Use `/arena` to engage or `/bailout` to retreat.", inline=False)
+    threat_color = COLOR_SUCCESS if dmg < 5 else COLOR_WARN if dmg < 8 else COLOR_ERROR
+    embed  = branded_embed(
+        title       = "👁️ Neighborhood Scout Report",
+        description = f"Reconnaissance detected: **{name_}**",
+        color       = threat_color)
+    embed.add_field(name="⚠️ Threat Level", value=threat, inline=True)
+    embed.add_field(name="❤️ HP",           value=f"**{hp}**", inline=True)
+    embed.add_field(name="💥 Damage",       value=f"**{dmg}**", inline=True)
+    embed.add_field(name="📋 Recommended Action",
+                    value="Use `/arena` to engage or `/bailout` to retreat.",
+                    inline=False)
     await interaction.response.send_message(embed=embed)
 
 # ============================================================
@@ -3041,11 +3272,19 @@ async def baseinfo(interaction: discord.Interaction):
         total_squads  = (await cursor.fetchone())[0]
         cursor        = await db.execute("SELECT COALESCE(SUM(credits), 0) FROM agents")
         total_credits = (await cursor.fetchone())[0]
+        cursor        = await db.execute("SELECT COALESCE(SUM(wins), 0), COALESCE(SUM(losses), 0) FROM agents")
+        total_wins, total_losses = await cursor.fetchone()
 
-    embed = discord.Embed(title="🏢 Border HQ Status", color=COLOR)
-    embed.add_field(name="🛡 Total Agents",        value=total_agents)
-    embed.add_field(name="👥 Total Squads",         value=total_squads)
-    embed.add_field(name="<:Yen:1519498350364332082> Credits Circulating", value=total_credits)
+    embed = branded_embed(
+        title       = "🏢 Border HQ Status",
+        description = "Live statistics from Border Headquarters.",
+        color       = COLOR_INFO)
+    embed.add_field(name="🛡 Total Agents",        value=f"**{total_agents}**", inline=True)
+    embed.add_field(name="👥 Total Squads",         value=f"**{total_squads}**", inline=True)
+    embed.add_field(name="⚔️ Total Battles",
+                        value=f"{total_wins}W / {total_losses}L", inline=True)
+    embed.add_field(name="<:Yen:1519498350364332082> Credits Circulating",
+                        value=f"**{total_credits:,}**", inline=False)
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="base", description="View Border Base defence status")
@@ -3054,34 +3293,44 @@ async def base(interaction: discord.Interaction):
         cursor     = await db.execute("SELECT level, hp FROM base_defense LIMIT 1")
         row        = await cursor.fetchone()
         level, hp  = row if row else (1, 10000)
-    bar   = hp_bar(hp, 10000)
-    embed = discord.Embed(title="<:Border:1519494342799130695> Border Base", color=COLOR)
-    embed.add_field(name="Level", value=level)
-    embed.add_field(name="HP",    value=f"{hp:,} / 10,000  {bar}")
+    bar   = gauge(hp, 10000, show_numbers=False)
+    embed = branded_embed(
+        title       = "<:Border:1519494342799130695> Border Base Defence",
+        description = "The structural integrity of Border HQ.",
+        color       = COLOR_INFO)
+    embed.add_field(name="🏢 Base Level", value=f"**{level}**", inline=True)
+    embed.add_field(name="🛡 Structural HP", value=f"{bar}  {hp:,}/10,000", inline=False)
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="basedefend", description="Join the base defence (cooperative — coming soon)")
 async def basedefend(interaction: discord.Interaction):
     await interaction.response.send_message(
-        embed=discord.Embed(title="<:Border:1519494342799130695> Base Defence",
-                            description="Cooperative base defence events are coming soon!",
-                            color=COLOR))
+        embed=warn_embed("<:Border:1519494342799130695> Base Defence",
+                          "Cooperative base defence events are coming soon!\n"
+                          "Stay tuned for large-scale Neighbor invasions."))
 
 # ============================================================
 # /trainers  /train
 # ============================================================
 @bot.tree.command(name="trainers", description="View available Border trainers")
 async def trainers(interaction: discord.Interaction):
-    embed = discord.Embed(title="👨‍🏫 Border Trainers", color=COLOR)
+    embed = branded_embed(
+        title       = "👨‍🏫 Border Trainers",
+        description = "Train with a master to permanently boost your stats.\n"
+                      "⏳ **1-hour cooldown** between sessions for every agent.",
+        color       = COLOR_INFO)
+    stat_icons = {"attack": "⚔️", "defense": "🛡️", "mobility": "🏃",
+                  "intelligence": "🧠", "trion_control": "<:TrionCube:1519499035613073438>"}
     for trainer, d in TRAINERS.items():
         if isinstance(d["boost"], tuple):
-            boost_text = f"+1 Attack, +1 Defense"
+            boost_text = "+1 ⚔️ Attack, +1 🛡️ Defense"
         else:
-            boost_text = f"+{d['boost']} {d['specialty']}"
+            icon = stat_icons.get(d["stat"], "•")
+            boost_text = f"+{d['boost']} {icon} {d['specialty']}"
         embed.add_field(name=f"🧑 {trainer}",
-                        value=f"{boost_text} · Cost: **{d['cost']} Credits**",
-                        inline=False)
-    embed.set_footer(text="Use /train <trainer_name>  ·  ⏳ 1-hour cooldown between sessions")
+                        value=f"{boost_text}\n<:Yen:1519498350364332082> **{d['cost']} Credits**",
+                        inline=True)
+    embed.set_footer(text="Use /train <trainer_name>  •  ⏳ 1-hour cooldown  •  " + BOT_NAME, icon_url=BOT_ICON)
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="train", description="Train with a Border trainer (1h cooldown)")
@@ -3091,7 +3340,9 @@ async def train(interaction: discord.Interaction, trainer_name: str):
         return
     trainer_name = trainer_name.title()
     if trainer_name not in TRAINERS:
-        await interaction.response.send_message("Invalid trainer. Use `/trainers` to see options.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=warn_embed("Invalid Trainer", f"**{trainer_name}** is not a valid trainer. Use `/trainers` to see options.", user=interaction.user),
+            ephemeral=True)
         return
 
     user_id = interaction.user.id
@@ -3120,7 +3371,12 @@ async def train(interaction: discord.Interaction, trainer_name: str):
         cursor = await db.execute("SELECT credits FROM agents WHERE user_id=?", (user_id,))
         creds  = (await cursor.fetchone())[0]
         if creds < d["cost"]:
-            await interaction.response.send_message(f"Need **{d['cost']}** credits.", ephemeral=True)
+            await interaction.response.send_message(
+                embed=warn_embed("Not Enough Credits",
+                                 f"You need **{d['cost']}** <:Yen:1519498350364332082> to train with {trainer_name}.\n"
+                                 f"You have **{creds}**.",
+                                 user=interaction.user),
+                ephemeral=True)
             return
 
         cursor = await db.execute(
@@ -3136,7 +3392,12 @@ async def train(interaction: discord.Interaction, trainer_name: str):
         boost_needed = 2 if isinstance(d["boost"], tuple) else d["boost"]
         if used + boost_needed > cap:
             await interaction.response.send_message(
-                f"Not enough stat cap space. ({used}/{cap} used)", ephemeral=True)
+                embed=warn_embed("Stat Cap Reached",
+                                 f"Not enough stat cap space.\n"
+                                 f"You've used **{used}/{cap}** stat points for your rank.\n"
+                                 f"Rank up to unlock more.",
+                                 user=interaction.user),
+                ephemeral=True)
             return
 
         if isinstance(d["boost"], tuple):
@@ -3154,10 +3415,10 @@ async def train(interaction: discord.Interaction, trainer_name: str):
     _train_cooldowns[user_id] = time.time()
 
     await interaction.response.send_message(
-        embed=discord.Embed(title="💪 Training Complete!",
-                            description=f"Trained with **{trainer_name}**!\n"
-                                        f"⏳ Next training available in **1 hour**.",
-                            color=COLOR))
+        embed=success_embed("💪 Training Complete!",
+                            f"Trained with **{trainer_name}**!\n"
+                            f"⏳ Next training available in **1 hour**.",
+                            user=interaction.user))
 
 # ============================================================
 # /redeem
@@ -3384,16 +3645,33 @@ async def missionsboard(interaction: discord.Interaction):
         missions = await cursor.fetchall()
 
     if not missions:
-        await interaction.response.send_message("No daily missions found.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=warn_embed("No Daily Missions", "No daily missions were assigned. Try again tomorrow!"),
+            ephemeral=True)
         return
 
-    embed = discord.Embed(title="📋 Daily Missions", color=COLOR)
+    embed = branded_embed(
+        title       = "📋 Daily Missions",
+        description = "Complete these missions before midnight for bonus rewards.\n"
+                      "Progress updates automatically as you play.",
+        color       = COLOR_INFO,
+        user        = interaction.user)
+    completed_count = 0
     for m_id, prog, targ, comp in missions:
         pool    = DAILY_MISSION_POOL[m_id]
-        status  = "✅ Done!" if comp else f"{prog}/{targ}"
-        rewards = f"+{pool.get('reward_credits',0)} Credits" + (f" · +{pool['reward_spins']} Spins" if pool.get("reward_spins") else "")
-        embed.add_field(name=pool["desc"], value=f"{status} · Reward: {rewards}", inline=False)
-    embed.set_footer(text="Missions reset daily at midnight.")
+        if comp:
+            status  = "✅ Complete"
+            completed_count += 1
+        else:
+            bar = stat_bar(prog, length=targ)
+            status  = f"`{prog}/{targ}`  {bar}"
+        rewards = f"+{pool.get('reward_credits',0)} <:Yen:1519498350364332082>"
+        if pool.get("reward_spins"):
+            rewards += f"  ·  +{pool['reward_spins']} 🎰"
+        embed.add_field(name=f"🔹 {pool['desc']}",
+                        value=f"{status}\n🎁 {rewards}",
+                        inline=False)
+    embed.set_footer(text=f"{completed_count}/{len(missions)} completed  •  Resets daily at midnight  •  {BOT_NAME}", icon_url=BOT_ICON)
     await interaction.response.send_message(embed=embed)
 
 # ============================================================
